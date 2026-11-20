@@ -15,6 +15,13 @@ const MAX_RENDERS_PER_FRAME: usize = 2; // keeps scrolling responsive on heavy p
 const MAX_TEXTURE_PX: usize = 8192;
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 6.0;
+const ARROW_SCROLL_STEP: f32 = 60.0; // points scrolled per Up/Down press (repeats while held)
+
+#[cfg(windows)]
+const OPEN_WITH_ADDED: &str = "Added. Right-click a PDF → Open with → deruPDF.\n\
+     To make it the default, pick deruPDF there and choose \"Always\".";
+#[cfg(windows)]
+const OPEN_WITH_REMOVED: &str = "Removed deruPDF from \"Open with\".";
 
 const BG_MAIN: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 
@@ -60,6 +67,28 @@ fn apply_theme(ctx: &egui::Context) {
 
 fn main() -> eframe::Result {
     let initial_file = std::env::args_os().nth(1).map(PathBuf::from);
+
+    // `deruPDF.exe --register` / `--unregister`: add or remove the "Open with" entry and exit
+    #[cfg(windows)]
+    if let Some(flag) = initial_file.as_deref().and_then(|p| p.to_str()) {
+        let result = match flag {
+            "--register" => Some(open_with::register().map(|()| OPEN_WITH_ADDED)),
+            "--unregister" => Some(open_with::unregister().map(|()| OPEN_WITH_REMOVED)),
+            _ => None,
+        };
+        if let Some(result) = result {
+            let (level, text) = match result {
+                Ok(msg) => (rfd::MessageLevel::Info, msg.to_string()),
+                Err(e) => (rfd::MessageLevel::Error, e),
+            };
+            rfd::MessageDialog::new()
+                .set_title("deruPDF")
+                .set_description(text)
+                .set_level(level)
+                .show();
+            return Ok(());
+        }
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -132,6 +161,12 @@ struct App {
     pending_scroll_y: Option<f32>,
     pending_center_frac: Option<f32>,
     pending_page: Option<usize>,
+
+    // "Open with" registration, shown on the start screen
+    #[cfg(windows)]
+    open_with_registered: bool,
+    #[cfg(windows)]
+    open_with_msg: Option<String>,
 }
 
 impl App {
@@ -170,6 +205,10 @@ impl App {
             pending_scroll_y: None,
             pending_center_frac: None,
             pending_page: None,
+            #[cfg(windows)]
+            open_with_registered: open_with::is_registered(),
+            #[cfg(windows)]
+            open_with_msg: None,
         };
 
         if let Some(path) = initial_file {
@@ -392,12 +431,14 @@ impl App {
         if !ctx.wants_keyboard_input() {
             if let Some(doc) = &self.doc {
                 let last = doc.sizes.len().saturating_sub(1);
-                let (pg_down, pg_up, home, end) = ctx.input(|i| {
+                let (pg_down, pg_up, home, end, up, down) = ctx.input(|i| {
                     (
-                        i.key_pressed(Key::PageDown),
-                        i.key_pressed(Key::PageUp),
+                        i.key_pressed(Key::PageDown) || i.key_pressed(Key::ArrowRight),
+                        i.key_pressed(Key::PageUp) || i.key_pressed(Key::ArrowLeft),
                         i.key_pressed(Key::Home),
                         i.key_pressed(Key::End),
+                        i.key_pressed(Key::ArrowUp),
+                        i.key_pressed(Key::ArrowDown),
                     )
                 });
                 if pg_down {
@@ -406,6 +447,11 @@ impl App {
                 if pg_up {
                     self.pending_page = Some(self.current_page.saturating_sub(1));
                 }
+                if up || down {
+                    let step = if down { ARROW_SCROLL_STEP } else { -ARROW_SCROLL_STEP };
+                    let max = (self.last_total_h - self.last_view_h).max(0.0);
+                    self.pending_scroll_y = Some((self.last_offset_y + step).clamp(0.0, max));
+                }
                 if home {
                     self.pending_page = Some(0);
                 }
@@ -413,6 +459,33 @@ impl App {
                     self.pending_page = Some(last);
                 }
             }
+        }
+    }
+
+    /// button that adds or removes deruPDF from Explorer's "Open with" menu
+    #[cfg(windows)]
+    fn open_with_ui(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(16.0);
+        let (label, hover) = if self.open_with_registered {
+            ("Remove from \"Open with\"", "Takes deruPDF out of the right-click menu for PDFs")
+        } else {
+            ("Add to \"Open with\"", "Lists deruPDF when you right-click a PDF → Open with")
+        };
+        if ui.button(label).on_hover_text(hover).clicked() {
+            let result = if self.open_with_registered {
+                open_with::unregister().map(|()| OPEN_WITH_REMOVED)
+            } else {
+                open_with::register().map(|()| OPEN_WITH_ADDED)
+            };
+            self.open_with_msg = Some(match result {
+                Ok(msg) => msg.to_string(),
+                Err(e) => e,
+            });
+            self.open_with_registered = open_with::is_registered();
+        }
+        if let Some(msg) = &self.open_with_msg {
+            ui.add_space(6.0);
+            ui.weak(msg);
         }
     }
 
@@ -680,8 +753,11 @@ impl eframe::App for App {
                         ui.colored_label(Color32::from_rgb(240, 130, 130), err);
                     });
                 } else if self.doc.is_none() {
-                    ui.centered_and_justified(|ui| {
+                    ui.add_space((ui.available_height() / 2.0 - 40.0).max(0.0));
+                    ui.vertical_centered(|ui| {
                         ui.label("Drop a PDF here, or press Ctrl+O");
+                        #[cfg(windows)]
+                        self.open_with_ui(ui);
                     });
                 } else {
                     self.pages(ui);
@@ -780,4 +856,171 @@ fn load_system_font(ctx: &egui::Context) {
         fonts.families.entry(family).or_default().push("ui".into());
     }
     ctx.set_fonts(fonts);
+}
+
+// ---------------------------------------------------------------------------
+// "Open with" registration (Windows)
+// ---------------------------------------------------------------------------
+
+/// Lists deruPDF in Explorer's right-click "Open with" menu for .pdf files.
+/// Everything lives under HKEY_CURRENT_USER, so no admin rights are needed.
+/// Windows doesn't let apps make themselves the default; the user picks deruPDF once
+/// in the "Open with" dialog and ticks "Always".
+#[cfg(windows)]
+mod open_with {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW,
+        RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+        RRF_RT_REG_SZ,
+    };
+    use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+
+    const PROG_ID: &str = "deruPDF.pdf";
+    const CLASSES: &str = r"Software\Classes";
+
+    fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
+        s.as_ref().encode_wide().chain(Some(0)).collect()
+    }
+
+    /// (full command line Explorer should run, the exe's file name)
+    fn exe() -> Result<(String, String), String> {
+        let path = std::env::current_exe().map_err(|e| format!("Couldn't find deruPDF.exe: {e}"))?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or("Couldn't find deruPDF.exe")?;
+        Ok((format!("\"{}\"", path.display()), name))
+    }
+
+    fn app_key(exe_name: &str) -> String {
+        format!(r"{CLASSES}\Applications\{exe_name}")
+    }
+
+    /// writes a string value, creating the key if needed. `name: None` is the key's default value.
+    fn set(key: &str, name: Option<&str>, value: &str) -> Result<(), String> {
+        let name = name.map(wide);
+        let data = wide(value);
+        unsafe {
+            let mut hkey: HKEY = null_mut();
+            let err = RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                wide(key).as_ptr(),
+                0,
+                null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                null(),
+                &mut hkey,
+                null_mut(),
+            );
+            if err != ERROR_SUCCESS {
+                return Err(format!(r"Couldn't write HKCU\{key} (error {err})"));
+            }
+            let err = RegSetValueExW(
+                hkey,
+                name.as_ref().map_or(null(), |n| n.as_ptr()),
+                0,
+                REG_SZ,
+                data.as_ptr().cast(),
+                (data.len() * 2) as u32,
+            );
+            RegCloseKey(hkey);
+            if err != ERROR_SUCCESS {
+                return Err(format!(r"Couldn't write HKCU\{key} (error {err})"));
+            }
+        }
+        Ok(())
+    }
+
+    /// reads a key's default string value
+    fn get_default(key: &str) -> Option<String> {
+        let key = wide(key);
+        let mut buf = vec![0u16; 1024];
+        let mut bytes = (buf.len() * 2) as u32;
+        let err = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                null(),
+                RRF_RT_REG_SZ,
+                null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if err != ERROR_SUCCESS {
+            return None;
+        }
+        let len = (bytes as usize / 2).saturating_sub(1); // drop the trailing nul
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+
+    fn ok_or_missing(err: u32, what: &str) -> Result<(), String> {
+        if err == ERROR_SUCCESS || err == ERROR_FILE_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(format!(r"Couldn't remove HKCU\{what} (error {err})"))
+        }
+    }
+
+    /// tells Explorer the file associations changed, so menus refresh without a sign-out
+    fn notify_shell() {
+        unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, null(), null()) };
+    }
+
+    /// true when the "Open with" entry exists and points at this exe (false after the exe moved)
+    pub fn is_registered() -> bool {
+        let Ok((exe, name)) = exe() else { return false };
+        get_default(&format!(r"{}\shell\open\command", app_key(&name)))
+            .is_some_and(|cmd| cmd == format!("{exe} \"%1\""))
+    }
+
+    pub fn register() -> Result<(), String> {
+        let (exe, name) = exe()?;
+        let command = format!("{exe} \"%1\"");
+        let icon = format!("{exe},0");
+        let app = app_key(&name);
+        let prog = format!(r"{CLASSES}\{PROG_ID}");
+
+        // the application itself, listed in "Open with" for the types it supports
+        set(&app, Some("FriendlyAppName"), "deruPDF")?;
+        set(&format!(r"{app}\DefaultIcon"), None, &icon)?;
+        set(&format!(r"{app}\SupportedTypes"), Some(".pdf"), "")?;
+        set(&format!(r"{app}\shell\open\command"), None, &command)?;
+
+        // a ProgID, so .pdf files show deruPDF's icon once it's chosen as the default
+        set(&prog, None, "PDF Document")?;
+        set(&prog, Some("FriendlyTypeName"), "PDF Document")?;
+        set(&format!(r"{prog}\DefaultIcon"), None, &icon)?;
+        set(&format!(r"{prog}\shell\open\command"), None, &command)?;
+        set(&format!(r"{CLASSES}\.pdf\OpenWithProgids"), Some(PROG_ID), "")?;
+
+        notify_shell();
+        Ok(())
+    }
+
+    pub fn unregister() -> Result<(), String> {
+        let (_, name) = exe()?;
+        let app = app_key(&name);
+        let prog = format!(r"{CLASSES}\{PROG_ID}");
+        let progids = format!(r"{CLASSES}\.pdf\OpenWithProgids");
+        unsafe {
+            ok_or_missing(RegDeleteTreeW(HKEY_CURRENT_USER, wide(&app).as_ptr()), &app)?;
+            ok_or_missing(RegDeleteTreeW(HKEY_CURRENT_USER, wide(&prog).as_ptr()), &prog)?;
+            ok_or_missing(
+                RegDeleteKeyValueW(
+                    HKEY_CURRENT_USER,
+                    wide(&progids).as_ptr(),
+                    wide(PROG_ID).as_ptr(),
+                ),
+                &progids,
+            )?;
+        }
+        notify_shell();
+        Ok(())
+    }
 }

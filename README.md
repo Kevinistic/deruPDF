@@ -9,8 +9,11 @@ PDFium (Chrome's PDF engine) for rendering and search.
 - Continuous scroll, renders only visible pages at exact screen resolution
 - Find: `Ctrl+F`, `Enter` / `Shift+Enter` (or `F3` / `Shift+F3`) for next/previous, `Esc` to close
 - Zoom: `Ctrl +` / `Ctrl -` / `Ctrl+0` (fit width), or `Ctrl` + mouse wheel
-- `PageUp` / `PageDown` / `Home` / `End` to jump between pages
-- Open with `Ctrl+O`, drag-and-drop, or `deruPDF.exe file.pdf` (so "Open with…" works)
+- `PageUp` / `PageDown` (or `←` / `→`) / `Home` / `End` to jump between pages, `↑` / `↓` to scroll
+- Open with `Ctrl+O`, drag-and-drop, or `deruPDF.exe file.pdf`
+- **Add to "Open with"** button on the start screen (or `deruPDF.exe --register` / `--unregister`)
+  lists deruPDF when you right-click a PDF. Per-user, no admin needed. To make it the default,
+  pick it there and choose "Always". If you move the exe, click the button again.
 
 ## Build on Windows
 

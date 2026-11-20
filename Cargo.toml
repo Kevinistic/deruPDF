@@ -1,6 +1,6 @@
 [package]
 name = "deruPDF"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "A tiny, fast PDF reader that stays on top of other windows"
 
@@ -11,6 +11,10 @@ description = "A tiny, fast PDF reader that stays on top of other windows"
 eframe = { version = "0.31", default-features = false, features = ["glow"] }
 pdfium-render = { version = "0.8.37", default-features = false, features = ["pdfium_latest", "thread_safe"] }
 rfd = "0.15"
+
+# Registry access for the "Open with" entry. windows-sys is already pulled in by winit, so this adds no crates.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_UI_Shell"] }
 
 # Linux and macOS keep egui's bundled fonts; Linux also needs the windowing backends.
 [target.'cfg(target_os = "linux")'.dependencies]
