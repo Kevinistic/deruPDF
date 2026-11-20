@@ -1,0 +1,17 @@
+# rust build output
+/target/
+
+# release zips
+/dist/
+
+# pdfium binaries
+pdfium.dll
+libpdfium.so
+libpdfium.dylib
+
+# editor/os clutter
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

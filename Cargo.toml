@@ -1,0 +1,30 @@
+[package]
+name = "deruPDF"
+version = "1.0.0"
+edition = "2021"
+description = "A tiny, fast PDF reader that stays on top of other windows"
+
+# Default features are trimmed to keep the binary small:
+# - eframe: no accesskit (screen readers); on Windows no bundled fonts (Segoe UI is loaded at runtime)
+# - pdfium-render: no `image` crate integration (pages are copied as raw RGBA)
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow"] }
+pdfium-render = { version = "0.8.37", default-features = false, features = ["pdfium_latest", "thread_safe"] }
+rfd = "0.15"
+
+# Linux and macOS keep egui's bundled fonts; Linux also needs the windowing backends.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+
+[profile.release]
+opt-level = "s" # optimize for size; page rendering runs inside pdfium, so speed is unaffected
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[build-dependencies]
+winresource = "0.1"
